@@ -1,6 +1,6 @@
-local Tools = require("resources/vrp/lib/Tools")
+local Tools = module("lib/Tools")
 
-local cfg = require("resources/vrp/cfg/gui")
+local cfg = module("cfg/gui")
 
 -- MENU
 
@@ -22,6 +22,11 @@ function vRP.openMenu(source,menudef)
       table.insert(menudata.choices,{k,v[2]})
     end
   end
+
+  -- sort choices per entry name
+  table.sort(menudata.choices, function(a,b)
+    return string.upper(a[1]) < string.upper(b[1])
+  end)
   
   -- name
   menudata.name = menudef.name or "Menu"
@@ -35,12 +40,12 @@ function vRP.openMenu(source,menudef)
   rclient_menus[source] = menudata.id
 
   -- openmenu
-  vRPclient.openMenuData(source,{menudata})
+  vRPclient._openMenuData(source, menudata)
 end
 
 -- force close player menu
 function vRP.closeMenu(source)
-  vRPclient.closeMenu(source,{})
+  vRPclient._closeMenu(source)
 end
 
 -- PROMPT
@@ -48,10 +53,14 @@ end
 local prompts = {}
 
 -- prompt textual (and multiline) information from player
-function vRP.prompt(source,title,default_text,cb_result)
-  prompts[source] = cb_result
+-- return entered text
+function vRP.prompt(source,title,default_text)
+  local r = async()
+  prompts[source] = r
 
-  vRPclient.prompt(source,{title,default_text})
+  vRPclient._prompt(source, title,default_text)
+
+  return r:wait()
 end
 
 -- REQUEST
@@ -61,51 +70,104 @@ local requests = {}
 
 -- ask something to a player with a limited amount of time to answer (yes|no request)
 -- time: request duration in seconds
--- cb_ok: function(player,ok)
-function vRP.request(source,text,time,cb_ok)
+-- return true (yes) or false (no)
+function vRP.request(source,text,time)
+  local r = async()
+
   local id = request_ids:gen()
-  local request = {source = source, cb_ok = cb_ok, done = false}
+  local request = {source = source, cb_ok = r, done = false}
   requests[id] = request
 
-  vRPclient.request(source,{id,text,time}) -- send request to client
+  vRPclient.request(source,id,text,time) -- send request to client
 
   -- end request with a timeout if not already ended
   SetTimeout(time*1000,function()
     if not request.done then
-      request.cb_ok(source,false) -- negative response
+      request.cb_ok(false) -- negative response
       request_ids:free(id)
       requests[id] = nil
     end
   end)
+
+  return r:wait()
+end
+
+
+-- GENERIC MENU BUILDER
+
+local menu_builders = {}
+
+-- register a menu builder function
+--- name: menu type name
+--- builder(add_choices, data) (callback, with custom data table)
+---- add_choices(choices) (callback to call once to add the built choices to the menu)
+function vRP.registerMenuBuilder(name, builder)
+  local mbuilders = menu_builders[name]
+  if not mbuilders then
+    mbuilders = {}
+    menu_builders[name] = mbuilders
+  end
+
+  table.insert(mbuilders, builder)
+end
+
+-- build a menu
+--- name: menu name type
+--- data: custom data table
+-- return built choices
+function vRP.buildMenu(name, data)
+  local r = async()
+
+  -- the task will return the built choices even if they aren't complete
+  local choices = {}
+
+  local mbuilders = menu_builders[name]
+  if mbuilders then
+    local count = #mbuilders
+
+    for k,v in pairs(mbuilders) do -- trigger builders
+      -- get back the built choices
+      local done = false
+      local function add_choices(bchoices)
+        if not done then -- prevent a builder to add things more than once
+          done = true
+
+          if bchoices then
+            for k,v in pairs(bchoices) do
+              choices[k] = v
+            end
+          end
+
+          count = count-1
+          if count == 0 then -- end of build
+            r(choices)
+          end
+        end
+      end
+
+      v(add_choices, data) -- trigger
+    end
+
+    return r:wait()
+  end
+
+  return {}
 end
 
 -- MAIN MENU
 
-local main_menu_builds = {}
-
 -- open the player main menu
 function vRP.openMainMenu(source)
-  local menudata = {name="Main menu",css={top="75px",header_color="rgba(0,125,255,0.75)"}}
-  main_menu_builds[source] = menudata
-
-  TriggerEvent("vRP:buildMainMenu",source) -- all resources can add choices to the menu using vRP.buildMainMenu(player,choices)
-
+  local menudata = vRP.buildMenu("main", {player = source})
+  menudata.name = "Main menu"
+  menudata.css = {top="75px",header_color="rgba(0,125,255,0.75)"}
   vRP.openMenu(source,menudata) -- open the generated menu
-end
-
--- called inside a vRP:buildMainMenu event to build the player main menu (to add choices)
-function vRP.buildMainMenu(source,choices)
-  local menudata = main_menu_builds[source]
-  if menudata ~= nil then
-    for k,v in pairs(choices) do
-      menudata[k] = v
-    end
-  end
 end
 
 -- SERVER TUNNEL API
 
 function tvRP.closeMenu(id)
+  local source = source
   local menu = client_menus[id]
   if menu and menu.source == source then
 
@@ -121,6 +183,7 @@ function tvRP.closeMenu(id)
 end
 
 function tvRP.validMenuChoice(id,choice,mod)
+  local source = source
   local menu = client_menus[id]
   if menu and menu.source == source then
     -- call choice callback
@@ -143,7 +206,7 @@ function tvRP.promptResult(text)
   local prompt = prompts[source]
   if prompt ~= nil then
     prompts[source] = nil
-    prompt(source,text)
+    prompt(text)
   end
 end
 
@@ -152,7 +215,7 @@ function tvRP.requestResult(id,ok)
   local request = requests[id]
   if request and request.source == source then -- end request
     request.done = true -- set done, the timeout will not call the callback a second time
-    request.cb_ok(source,not not ok) -- callback
+    request.cb_ok(not not ok) -- callback
     request_ids:free(id)
     requests[id] = nil
   end
@@ -165,58 +228,34 @@ end
 
 
 -- STATIC MENUS
-local static_menu_choices = {}
-
--- define choices to a static menu by name
-function vRP.addStaticMenuChoices(name, choices)
-  local mchoices = static_menu_choices[name]
-  if mchoices == nil then
-    static_menu_choices[name] = {}
-    mchoices = static_menu_choices[name]
-  end
-
-  for k,v in pairs(choices) do
-    mchoices[k] = v
-  end
-end
-
--- build static menus
-local static_menus = {}
-SetTimeout(10000,function() -- wait for vRP.addStaticMenuChoices calls
-  for k,v in pairs(cfg.static_menu_types) do
-    local menu = {name=v.title, css={top="75px",header_color="rgba(255,226,0,0.75)"}}
-    local choices = static_menu_choices[k] or {}
-
-    for l,w in pairs(choices) do
-      menu[l] = w
-    end
-
-    static_menus[k] = menu
-  end
-end)
 
 local function build_client_static_menus(source)
   local user_id = vRP.getUserId(source)
-  if user_id ~= nil then
+  if user_id then
     for k,v in pairs(cfg.static_menus) do
       local mtype,x,y,z = table.unpack(v)
-      local menu = static_menus[mtype]
       local smenu = cfg.static_menu_types[mtype]
 
-      if menu and smenu then
-        local function smenu_enter()
+      if smenu then
+        local function smenu_enter(source)
           local user_id = vRP.getUserId(source)
           if user_id ~= nil and vRP.hasPermissions(user_id,smenu.permissions or {}) then
+            -- build static menu
+            local menu = vRP.buildMenu("static:"..k, {player=source})
+            menu.name=v.title
+            menu.css={top="75px",header_color="rgba(255,226,0,0.75)"}
+
+            -- open
             vRP.openMenu(source,menu) 
           end
         end
 
-        local function smenu_leave()
+        local function smenu_leave(source)
           vRP.closeMenu(source)
         end
 
-        vRPclient.addBlip(source,{x,y,z,smenu.blipid,smenu.blipcolor,smenu.title})
-        vRPclient.addMarker(source,{x,y,z-1,0.7,0.7,0.5,255,226,0,125,150})
+        vRPclient._addBlip(source,x,y,z,smenu.blipid,smenu.blipcolor,smenu.title)
+        vRPclient._addMarker(source,x,y,z-1,0.7,0.7,0.5,255,226,0,125,150)
 
         vRP.setArea(source,"vRP:static_menu:"..k,x,y,z,1,1.5,smenu_enter,smenu_leave)
       end
@@ -228,7 +267,7 @@ end
 AddEventHandler("vRP:playerSpawn",function(user_id, source, first_spawn)
   if first_spawn then
     -- load additional css using the div api
-    vRPclient.setDiv(source,{"additional_css",".div_additional_css{ display: none; }\n\n"..cfg.css,""})
+    vRPclient._setDiv(source,"additional_css",".div_additional_css{ display: none; }\n\n"..cfg.css,"")
 
     -- load static menus
     build_client_static_menus(source)
@@ -238,7 +277,7 @@ end)
 AddEventHandler("vRP:playerLeave", function(user_id, source)
   -- force close opened menu on leave
   local id = rclient_menus[source]
-  if id ~= nil then
+  if id then
     local menu = client_menus[id]
     if menu and menu.source == source then
       -- call callback
@@ -252,3 +291,18 @@ AddEventHandler("vRP:playerLeave", function(user_id, source)
     end
   end
 end)
+
+-- VoIP
+
+function tvRP.signalVoicePeer(player, data)
+  vRPclient._signalVoicePeer(player, source, data)
+end
+
+AddEventHandler("vRP:playerSpawn",function(user_id, source, first_spawn)
+  if first_spawn then
+    -- send peer config
+    vRPclient._setPeerConfiguration(source, cfg.voip_peer_configuration)
+  end
+end)
+
+

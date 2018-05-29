@@ -11,6 +11,9 @@ local lang = {
     wearing_uniform = "~r~Attention, vous portez un uniforme.",
     not_allowed = "~r~Non autorisé."
   },
+  weapon = {
+    pistol = "Pistolet"
+  },
   survival = {
     starving = "Affamé",
     thirsty = "Assoiffé"
@@ -180,6 +183,10 @@ local lang = {
         title = "Menotter",
         description = "Menotter/démenotter le joueur le plus proche."
       },
+      drag = {
+        title = "Traîner",
+        description = "Traîner/arrêter de traîner le joueur le plus proche."
+      },
       putinveh = {
         title = "Mettre dans le véhicule",
         description = "Mettre le joueur menotté le plus proche dans le véhicule le plus proche vous appartenant."
@@ -271,6 +278,10 @@ local lang = {
       },
       remove = {
         title = "Supprimer"
+      },
+      call = {
+        title = "Appeler",
+        not_reached = "~r~ n°{1} indisponible."
       }
     },
     sms = {
@@ -294,6 +305,16 @@ local lang = {
       description = "Envoyer une annonce visible à tous pendant quelques secondes.",
       item_desc = "{1} $<br /><br/>{2}",
       prompt = "Contenu de l'annonce (10-1000 caractères): "
+    },
+    call = {
+      ask = "Accepter l'appel depuis {1} ?",
+      notify_to = "Appel~b~ {1}...",
+      notify_from = "Appel reçu de ~b~ {1}...",
+      notify_refused = "Appel vers ~b~ {1}... ~r~ refusé."
+    },
+    hangup = {
+      title = "Raccrocher",
+      description = "Raccrocher le téléphone (terminer l'appel en cours)."
     }
   },
   emotes = {
@@ -352,6 +373,12 @@ local lang = {
         request = "[PARI] Voulez vous parier {1} $ ?",
         started = "~g~Pari commencé."
       }
+    },
+    radio = {
+      title = "Radio",
+      off = {
+        title = "> éteindre"
+      }
     }
   },
   garage = {
@@ -375,7 +402,9 @@ local lang = {
     },
     store = {
       title = "Rentrer au garage",
-      description = "Rentrez votre véhicule au garage."
+      description = "Rentrez votre véhicule au garage.",
+      too_far = "Le véhicule est trop loin.",
+      wrong_garage = "Le véhicule ne peut pas être rangé dans ce garage."
     }
   },
   vehicle = {
@@ -439,6 +468,7 @@ local lang = {
     }
   },
   itemtr = {
+    not_enough_reagents = "~r~Pas assez d'éléments.",
     informer = {
       title = "Informateur illégal",
       description = "{1} $",
@@ -461,8 +491,11 @@ local lang = {
     level_up = "Compétence ~b~{1}/{2} ~g~monte en niveau ({3}).",
     display = {
       group = "{1}: ",
-      aptitude = "--- {1} | exp {2} | niv. {3} | progression {4}%"
+      aptitude = "{1} NIV {3} EXP {2}"
     }
+  },
+  radio = {
+    title = "Radio ON/OFF"
   }
 }
 

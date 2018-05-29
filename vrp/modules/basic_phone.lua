@@ -2,12 +2,12 @@
 -- basic phone module
 
 local lang = vRP.lang
-local cfg = require("resources/vrp/cfg/phone")
-local htmlEntities = require("resources/vrp/lib/htmlEntities")
+local cfg = module("cfg/phone")
+local htmlEntities = module("lib/htmlEntities")
 local services = cfg.services
 local announces = cfg.announces
 
-local sanitizes = require("resources/vrp/cfg/sanitizes")
+local sanitizes = module("cfg/sanitizes")
 
 -- api
 
@@ -24,32 +24,32 @@ function vRP.sendServiceAlert(sender, service_name,x,y,z,msg)
     for k,v in pairs(vRP.rusers) do
       local player = vRP.getUserSource(tonumber(k))
       -- check user
-      if vRP.hasPermission(k,service.alert_permission) and player ~= nil then
+      if vRP.hasPermission(k,service.alert_permission) and player then
         table.insert(players,player)
       end
     end
 
     -- send notify and alert to all listening players
     for k,v in pairs(players) do
-      vRPclient.notify(v,{service.alert_notify..msg})
+      vRPclient._notify(v,service.alert_notify..msg)
       -- add position for service.time seconds
-      vRPclient.addBlip(v,{x,y,z,service.blipid,service.blipcolor,"("..service_name..") "..msg}, function(bid)
-        SetTimeout(service.alert_time*1000,function()
-          vRPclient.removeBlip(v,{bid})
-        end)
+      local bid = vRPclient.addBlip(v,x,y,z,service.blipid,service.blipcolor,"("..service_name..") "..msg)
+      SetTimeout(service.alert_time*1000,function()
+        vRPclient._removeBlip(v,bid)
       end)
 
       -- call request
       if sender ~= nil then
-        vRP.request(v,lang.phone.service.ask_call({service_name, htmlEntities.encode(msg)}), 30, function(v,ok)
+        async(function()
+          local ok = vRP.request(v,lang.phone.service.ask_call({service_name, htmlEntities.encode(msg)}), 30)
           if ok then -- take the call
             if not answered then
               -- answer the call
-              vRPclient.notify(sender,{service.answer_notify})
-              vRPclient.setGPS(v,{x,y})
+              vRPclient._notify(sender,service.answer_notify)
+              vRPclient._setGPS(v,x,y)
               answered = true
             else
-              vRPclient.notify(v,{lang.phone.service.taken()})
+              vRPclient._notify(v,lang.phone.service.taken())
             end
           end
         end)
@@ -77,14 +77,57 @@ function vRP.sendSMS(user_id, phone, msg)
       end
 
       local from = vRP.getPhoneDirectoryName(dest_id, identity.phone).." ("..identity.phone..")"
-      
-      vRPclient.notify(dest_src,{lang.phone.sms.notify({from, msg})})
+
+      vRPclient._notify(dest_src,lang.phone.sms.notify({from, msg}))
+      vRPclient._playAudioSource(dest_src, cfg.sms_sound, 0.5)
       table.insert(phone_sms,1,{identity.phone,msg}) -- insert new sms at first position {phone,message}
       return true
     end
   end
+end
 
-  return false
+-- call from a user to a phone number
+-- return true if the communication is established
+function vRP.phoneCall(user_id, phone)
+  local identity = vRP.getUserIdentity(user_id)
+  local src = vRP.getUserSource(user_id)
+  local dest_id = vRP.getUserByPhone(phone)
+  if identity and dest_id then
+    local dest_src = vRP.getUserSource(dest_id)
+    if dest_src then
+      local to = vRP.getPhoneDirectoryName(user_id, phone).." ("..phone..")"
+      local from = vRP.getPhoneDirectoryName(dest_id, identity.phone).." ("..identity.phone..")"
+
+      vRPclient._phoneHangUp(src) -- hangup phone of the caller
+      vRPclient._phoneCallWaiting(src, dest_src, true) -- make caller to wait the answer
+
+      -- notify
+      vRPclient._notify(src,lang.phone.call.notify_to({to}))
+      vRPclient._notify(dest_src,lang.phone.call.notify_from({from}))
+
+      -- play dialing sound
+      vRPclient._setAudioSource(src, "vRP:phone:dialing", cfg.dialing_sound, 0.5)
+      vRPclient._setAudioSource(dest_src, "vRP:phone:dialing", cfg.ringing_sound, 0.5)
+
+      local ok = false
+
+      -- send request to called
+      if vRP.request(dest_src, lang.phone.call.ask({from}), 15) then -- accepted
+        vRPclient._phoneHangUp(dest_src) -- hangup phone of the receiver
+        vRPclient._connectVoice(dest_src, "phone", src) -- connect voice
+        ok = true
+      else -- refused
+        vRPclient._notify(src,lang.phone.call.notify_refused({to})) 
+        vRPclient._phoneCallWaiting(src, dest_src, false) 
+      end
+
+      -- remove dialing sound
+      vRPclient._removeAudioSource(src, "vRP:phone:dialing")
+      vRPclient._removeAudioSource(dest_src, "vRP:phone:dialing")
+
+      return ok
+    end
+  end
 end
 
 -- send an smspos from an user to a phone number
@@ -96,18 +139,17 @@ function vRP.sendSMSPos(user_id, phone, x,y,z)
     local dest_src = vRP.getUserSource(dest_id)
     if dest_src then
       local from = vRP.getPhoneDirectoryName(dest_id, identity.phone).." ("..identity.phone..")"
-      vRPclient.notify(dest_src,{lang.phone.smspos.notify({from})}) -- notify
+      vRPclient._playAudioSource(dest_src, cfg.sms_sound, 0.5)
+      vRPclient._notify(dest_src,lang.phone.smspos.notify({from})) -- notify
       -- add position for 5 minutes
-      vRPclient.addBlip(dest_src,{x,y,z,162,37,from}, function(bid)
-        SetTimeout(cfg.smspos_duration*1000,function()
-          vRPclient.removeBlip(dest_src,{bid})
-        end)
+      local bid = vRPclient.addBlip(dest_src,x,y,z,162,37,from)
+      SetTimeout(cfg.smspos_duration*1000,function()
+        vRPclient._removeBlip(dest_src,{bid})
       end)
+
       return true
     end
   end
-
-  return false
 end
 
 -- get phone directory data table
@@ -154,24 +196,22 @@ local phone_menu = {name=lang.phone.title(),css={top="75px",header_color="rgba(0
 
 local function ch_directory(player,choice)
   local user_id = vRP.getUserId(player)
-  if user_id ~= nil then
+  if user_id then
     local phone_directory = vRP.getPhoneDirectory(user_id)
     -- build directory menu
     local menu = {name=choice,css={top="75px",header_color="rgba(0,125,255,0.75)"}}
 
     local ch_add = function(player, choice) -- add to directory
-      vRP.prompt(player,lang.phone.directory.add.prompt_number(),"",function(player,phone)
-        vRP.prompt(player,lang.phone.directory.add.prompt_name(),"",function(player,name)
-          name = sanitizeString(tostring(name),sanitizes.text[1],sanitizes.text[2])
-          phone = sanitizeString(tostring(phone),sanitizes.text[1],sanitizes.text[2])
-          if #name > 0 and #phone > 0 then
-            phone_directory[name] = phone -- set entry
-            vRPclient.notify(player, {lang.phone.directory.add.added()})
-          else
-            vRPclient.notify(player, {lang.common.invalid_value()})
-          end
-        end)
-      end)
+      local phone = vRP.prompt(player,lang.phone.directory.add.prompt_number(),"")
+      local name = vRP.prompt(player,lang.phone.directory.add.prompt_name(),"")
+      name = sanitizeString(tostring(name),sanitizes.text[1],sanitizes.text[2])
+      phone = sanitizeString(tostring(phone),sanitizes.text[1],sanitizes.text[2])
+      if #name > 0 and #phone > 0 then
+        phone_directory[name] = phone -- set entry
+        vRPclient._notify(player, lang.phone.directory.add.added())
+      else
+        vRPclient._notify(player, lang.common.invalid_value())
+      end
     end
 
     local ch_entry = function(player, choice) -- directory entry menu
@@ -187,32 +227,37 @@ local function ch_directory(player,choice)
       end
 
       local ch_sendsms = function(player, choice) -- send sms to directory entry
-        vRP.prompt(player,lang.phone.directory.sendsms.prompt({cfg.sms_size}),"",function(player,msg)
-          msg = sanitizeString(msg,sanitizes.text[1],sanitizes.text[2])
-          if vRP.sendSMS(user_id, phone, msg) then
-            vRPclient.notify(player,{lang.phone.directory.sendsms.sent({phone})})
-          else
-            vRPclient.notify(player,{lang.phone.directory.sendsms.not_sent({phone})})
-          end
-        end)
+        local msg = vRP.prompt(player,lang.phone.directory.sendsms.prompt({cfg.sms_size}),"")
+        msg = sanitizeString(msg,sanitizes.text[1],sanitizes.text[2])
+        if vRP.sendSMS(user_id, phone, msg) then
+          vRPclient._notify(player,lang.phone.directory.sendsms.sent({phone}))
+        else
+          vRPclient._notify(player,lang.phone.directory.sendsms.not_sent({phone}))
+        end
       end
 
       local ch_sendpos = function(player, choice) -- send current position to directory entry
-        vRPclient.getPosition(player,{},function(x,y,z)
-          if vRP.sendSMSPos(user_id, phone, x,y,z) then
-            vRPclient.notify(player,{lang.phone.directory.sendsms.sent({phone})})
-          else
-            vRPclient.notify(player,{lang.phone.directory.sendsms.not_sent({phone})})
-          end
-        end)
+        local x,y,z = vRPclient.getPosition(player)
+        if vRP.sendSMSPos(user_id, phone, x,y,z) then
+          vRPclient._notify(player,lang.phone.directory.sendsms.sent({phone}))
+        else
+          vRPclient._notify(player,lang.phone.directory.sendsms.not_sent({phone}))
+        end
       end
 
+      local ch_call = function(player, choice) -- call player
+        if not vRP.phoneCall(user_id, phone) then
+          vRPclient._notify(player,lang.phone.directory.call.not_reached({phone}))
+        end
+      end
+
+      emenu[lang.phone.directory.call.title()] = {ch_call}
       emenu[lang.phone.directory.sendsms.title()] = {ch_sendsms}
       emenu[lang.phone.directory.sendpos.title()] = {ch_sendpos}
       emenu[lang.phone.directory.remove.title()] = {ch_remove}
 
       -- nest menu to directory
-      emenu.onclose = function() ch_directory(player,lang.phone.directory.title()) end 
+      emenu.onclose = function() ch_directory(player,lang.phone.directory.title()) end
 
       -- open mnu
       vRP.openMenu(player, emenu)
@@ -234,7 +279,7 @@ end
 
 local function ch_sms(player, choice)
   local user_id = vRP.getUserId(player)
-  if user_id ~= nil then
+  if user_id then
     local phone_sms = vRP.getPhoneSMS(user_id)
 
     -- build sms list
@@ -246,14 +291,13 @@ local function ch_sms(player, choice)
       local phone = v[1]
       menu["#"..k.." "..from] = {function(player,choice)
         -- answer to sms
-        vRP.prompt(player,lang.phone.directory.sendsms.prompt({cfg.sms_size}),"",function(player,msg)
-          msg = sanitizeString(msg,sanitizes.text[1],sanitizes.text[2])
-          if vRP.sendSMS(user_id, phone, msg) then
-            vRPclient.notify(player,{lang.phone.directory.sendsms.sent({phone})})
-          else
-            vRPclient.notify(player,{lang.phone.directory.sendsms.not_sent({phone})})
-          end
-        end)
+        local msg = vRP.prompt(player,lang.phone.directory.sendsms.prompt({cfg.sms_size}),"")
+        msg = sanitizeString(msg,sanitizes.text[1],sanitizes.text[2])
+        if vRP.sendSMS(user_id, phone, msg) then
+          vRPclient._notify(player,lang.phone.directory.sendsms.sent({phone}))
+        else
+          vRPclient._notify(player,lang.phone.directory.sendsms.not_sent({phone}))
+        end
       end, lang.phone.sms.info({from,htmlEntities.encode(v[2])})}
     end
 
@@ -274,13 +318,11 @@ service_menu.onclose = function(player) vRP.openMenu(player, phone_menu) end
 local function ch_service_alert(player,choice) -- alert a service
   local service = services[choice]
   if service then
-    vRPclient.getPosition(player,{},function(x,y,z)
-      vRP.prompt(player,lang.phone.service.prompt(),"",function(player, msg)
-        msg = sanitizeString(msg,sanitizes.text[1],sanitizes.text[2])
-        vRPclient.notify(player,{service.notify}) -- notify player
-        vRP.sendServiceAlert(player,choice,x,y,z,msg) -- send service alert (call request)
-      end)
-    end)
+    local x,y,z = vRPclient.getPosition(player)
+    local msg = vRP.prompt(player,lang.phone.service.prompt(),"")
+    msg = sanitizeString(msg,sanitizes.text[1],sanitizes.text[2])
+    vRPclient._notify(player,service.notify) -- notify player
+    vRP.sendServiceAlert(player,choice,x,y,z,msg) -- send service alert (call request)
   end
 end
 
@@ -301,31 +343,30 @@ announce_menu.onclose = function(player) vRP.openMenu(player, phone_menu) end
 local function ch_announce_alert(player,choice) -- alert a announce
   local announce = announces[choice]
   local user_id = vRP.getUserId(player)
-  if announce and user_id ~= nil then
-    if announce.permission == nil or vRP.hasPermission(user_id,announce.permission) then
-      vRP.prompt(player,lang.phone.announce.prompt(),"",function(player, msg)
-        msg = sanitizeString(msg,sanitizes.text[1],sanitizes.text[2])
-        if string.len(msg) > 10 and string.len(msg) < 1000 then
-          if announce.price <= 0 or vRP.tryPayment(user_id, announce.price) then -- try to pay the announce
-            vRPclient.notify(player, {lang.money.paid({announce.price})})
+  if announce and user_id then
+    if not announce.permission or vRP.hasPermission(user_id,announce.permission) then
+      local msg = vRP.prompt(player,lang.phone.announce.prompt(),"")
+      msg = sanitizeString(msg,sanitizes.text[1],sanitizes.text[2])
+      if string.len(msg) > 10 and string.len(msg) < 1000 then
+        if announce.price <= 0 or vRP.tryPayment(user_id, announce.price) then -- try to pay the announce
+          vRPclient._notify(player, lang.money.paid({announce.price}))
 
-            msg = htmlEntities.encode(msg)
-            msg = string.gsub(msg, "\n", "<br />") -- allow returns
-            
-            -- send announce to all
-            local users = vRP.getUsers()
-            for k,v in pairs(users) do
-              vRPclient.announce(v,{announce.image,msg})
-            end
-          else
-            vRPclient.notify(player, {lang.money.not_enough()})
+          msg = htmlEntities.encode(msg)
+          msg = string.gsub(msg, "\n", "<br />") -- allow returns
+
+          -- send announce to all
+          local users = vRP.getUsers()
+          for k,v in pairs(users) do
+            vRPclient._announce(v,announce.image,msg)
           end
         else
-          vRPclient.notify(player, {lang.common.invalid_value()})
+          vRPclient._notify(player, lang.money.not_enough())
         end
-      end)
+      else
+        vRPclient._notify(player, lang.common.invalid_value())
+      end
     else
-      vRPclient.notify(player, {lang.common.not_allowed()})
+      vRPclient._notify(player, lang.common.not_allowed())
     end
   end
 end
@@ -338,19 +379,33 @@ local function ch_announce(player, choice)
   vRP.openMenu(player,announce_menu)
 end
 
+local function ch_hangup(player, choice)
+  vRPclient._phoneHangUp(player)
+end
+
 phone_menu[lang.phone.directory.title()] = {ch_directory,lang.phone.directory.description()}
 phone_menu[lang.phone.sms.title()] = {ch_sms,lang.phone.sms.description()}
 phone_menu[lang.phone.service.title()] = {ch_service,lang.phone.service.description()}
 phone_menu[lang.phone.announce.title()] = {ch_announce,lang.phone.announce.description()}
+phone_menu[lang.phone.hangup.title()] = {ch_hangup,lang.phone.hangup.description()}
+
+-- phone menu static builder after 10 seconds
+SetTimeout(10000, function()
+  local menu = vRP.buildMenu("phone", {})
+  for k,v in pairs(menu) do
+    phone_menu[k] = v
+  end
+end)
 
 -- add phone menu to main menu
 
-AddEventHandler("vRP:buildMainMenu",function(player) 
+vRP.registerMenuBuilder("main", function(add, data)
+  local player = data.player
   local choices = {}
   choices[lang.phone.title()] = {function() vRP.openMenu(player,phone_menu) end}
 
   local user_id = vRP.getUserId(player)
-  if user_id ~= nil and vRP.hasPermission(user_id, "player.phone") then
-    vRP.buildMainMenu(player,choices)
+  if user_id and vRP.hasPermission(user_id, "player.phone") then
+    add(choices)
   end
 end)

@@ -1,10 +1,114 @@
+-- this file define global tools required by vRP and vRP extensions
+-- it will create module, SERVER, CLIENT, async...
+
+-- side detection
+SERVER = not IsVehicleEngineStarting
+CLIENT = not SERVER
+
+function table.maxn(t)
+  local max = 0
+  for k,v in pairs(t) do
+    local n = tonumber(k)
+    if n and n > max then max = n end
+  end
+
+  return max
+end
+
+local modules = {}
+-- load a lua resource file as module
+-- rsc: resource name
+-- path: lua file path without extension
+function module(rsc, path)
+  if path == nil then -- shortcut for vrp, can omit the resource parameter
+    path = rsc
+    rsc = "vrp"
+  end
+
+  local key = rsc..path
+
+  local module = modules[key]
+  if module then -- cached module
+    return module
+  else
+    local code = LoadResourceFile(rsc, path..".lua")
+    if code then
+      local f,err = load(code, rsc.."/"..path..".lua")
+      if f then
+        local ok, res = xpcall(f, debug.traceback)
+        if ok then
+          modules[key] = res
+          return res
+        else
+          error("error loading module "..rsc.."/"..path..":"..res)
+        end
+      else
+        error("error parsing module "..rsc.."/"..path..":"..debug.traceback(err))
+      end
+    else
+      error("resource file "..rsc.."/"..path..".lua not found")
+    end
+  end
+end
+
+-- Luaseq like for FiveM
+
+local Debug = module("vrp", "lib/Debug")
+
+local function wait(self)
+  if Debug.active then -- debug
+    SetTimeout(math.floor(Debug.async_time)*1000, function()
+      if not self.r then
+        Debug.log("WARNING: in resource \""..GetCurrentResourceName().."\" async return take more than "..Debug.async_time.."s "..self.traceback, true)
+      end
+    end)
+  end
+
+  local rets = Citizen.Await(self.p)
+  if not rets then
+    rets = self.r 
+  end
+
+  return table.unpack(rets, 1, table.maxn(rets))
+end
+
+local function areturn(self, ...)
+  self.r = {...}
+  self.p:resolve(self.r)
+end
+
+-- create an async returner
+function async(func)
+  if func then
+    Citizen.CreateThreadNow(func)
+  else
+    if Debug.active then -- debug
+      return setmetatable({ wait = wait, p = promise.new(), traceback = debug.traceback("",2) }, { __call = areturn })
+    else
+      return setmetatable({ wait = wait, p = promise.new() }, { __call = areturn })
+    end
+  end
+end
 
 function parseInt(v)
-  return cast(int,tonumber(v))
+--  return cast(int,tonumber(v))
+  local n = tonumber(v)
+  if n == nil then 
+    return 0
+  else
+    return math.floor(n)
+  end
 end
 
 function parseDouble(v)
-  return cast(double,tonumber(v))
+--  return cast(double,tonumber(v))
+  local n = tonumber(v)
+  if n == nil then n = 0 end
+  return n
+end
+
+function parseFloat(v)
+  return parseDouble(v)
 end
 
 -- will remove chars not allowed/disabled by strchars
@@ -66,3 +170,4 @@ function joinStrings(list, sep)
 
   return str
 end
+

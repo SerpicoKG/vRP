@@ -4,7 +4,7 @@
 -- units are generated periodically at a specific rate
 -- reagents => products (reagents can be nothing, as for an harvest transformer)
 
-local cfg = require("resources/vrp/cfg/item_transformers")
+local cfg = module("cfg/item_transformers")
 local lang = vRP.lang
 
 -- api
@@ -14,7 +14,7 @@ local transformers = {}
 local function tr_remove_player(tr,player) -- remove player from transforming
   local recipe = tr.players[player] or ""
   tr.players[player] = nil -- dereference player
-  vRPclient.removeProgressBar(player,{"vRP:tr:"..tr.name})
+  vRPclient._removeProgressBar(player,"vRP:tr:"..tr.name)
   vRP.closeMenu(player)
 
   -- onstop
@@ -24,7 +24,7 @@ end
 local function tr_add_player(tr,player,recipe) -- add player to transforming
   tr.players[player] = recipe -- reference player as using transformer
   vRP.closeMenu(player)
-  vRPclient.setProgressBar(player,{"vRP:tr:"..tr.name,"center",recipe.."...",tr.itemtr.r,tr.itemtr.g,tr.itemtr.b,0})
+  vRPclient._setProgressBar(player,"vRP:tr:"..tr.name,"center",recipe.."...",tr.itemtr.r,tr.itemtr.g,tr.itemtr.b,0)
 
   -- onstart
   if tr.itemtr.onstart then tr.itemtr.onstart(player,recipe) end
@@ -33,7 +33,7 @@ end
 local function tr_tick(tr) -- do transformer tick
   for k,v in pairs(tr.players) do
     local user_id = vRP.getUserId(tonumber(k))
-    if v and user_id ~= nil then -- for each player transforming
+    if v and user_id then -- for each player transforming
       local recipe = tr.itemtr.recipes[v]
       if tr.units > 0 and recipe then -- check units
         -- check reagents
@@ -59,7 +59,15 @@ local function tr_tick(tr) -- do transformer tick
         local inventory_ok = true
         if new_weight > vRP.getInventoryMaxWeight(user_id) then
           inventory_ok = false
-          vRPclient.notify(tonumber(k), {lang.inventory.full()})
+          vRPclient._notify(tonumber(k), lang.inventory.full())
+        end
+
+        if not money_ok then
+          vRPclient._notify(tonumber(k), lang.money.not_enough())
+        end
+
+        if not reagents_ok then
+          vRPclient._notify(tonumber(k), lang.itemtr.not_enough_reagents())
         end
 
         if money_ok and reagents_ok and inventory_ok then -- do transformation
@@ -94,12 +102,12 @@ local function tr_tick(tr) -- do transformer tick
 
   -- display transformation state to all transforming players
   for k,v in pairs(tr.players) do
-    vRPclient.setProgressBarValue(k,{"vRP:tr:"..tr.name,math.floor(tr.units/tr.itemtr.max_units*100.0)})
+    vRPclient._setProgressBarValue(k,"vRP:tr:"..tr.name,math.floor(tr.units/tr.itemtr.max_units*100.0))
     
     if tr.units > 0 then -- display units left
-      vRPclient.setProgressBarText(k,{"vRP:tr:"..tr.name,v.."... "..tr.units.."/"..tr.itemtr.max_units})
+      vRPclient._setProgressBarText(k,"vRP:tr:"..tr.name,v.."... "..tr.units.."/"..tr.itemtr.max_units)
     else
-      vRPclient.setProgressBarText(k,{"vRP:tr:"..tr.name,"empty"})
+      vRPclient._setProgressBarText(k,"vRP:tr:"..tr.name,"empty")
     end
   end
 end
@@ -145,17 +153,17 @@ function vRP.setItemTransformer(name,itemtr)
     local info = "<br /><br />"
     if recipe.in_money > 0 then info = info.."- "..recipe.in_money end
     for k,v in pairs(recipe.reagents) do
-      local item = vRP.items[k]
-      if item then
-        info = info.."<br />"..v.." "..item.name
+      local item_name, item_desc, item_weight = vRP.getItemDefinition(k)
+      if item_name then
+        info = info.."<br />"..v.." "..item_name
       end
     end
     info = info.."<br /><span style=\"color: rgb(0,255,125)\">=></span>"
     if recipe.out_money > 0 then info = info.."<br />+ "..recipe.out_money end
     for k,v in pairs(recipe.products) do
-      local item = vRP.items[k]
-      if item then
-        info = info.."<br />"..v.." "..item.name
+      local item_name, item_desc, item_weight = vRP.getItemDefinition(k)
+      if item_name then
+        info = info.."<br />"..v.." "..item_name
       end
     end
     for k,v in pairs(recipe.aptitudes or {}) do
@@ -168,13 +176,17 @@ function vRP.setItemTransformer(name,itemtr)
       end
     end
 
-    tr.menu[action] = {function(player,choice) tr_add_player(tr,player,action) end, recipe.description..info}
+    tr.menu[action] = {function(player,choice)
+      if vRP.inArea(player, "vRP:tr:"..tr.name) then
+        tr_add_player(tr,player,action)
+      end
+    end, recipe.description..info}
   end
 
   -- build area
   tr.enter = function(player,area)
     local user_id = vRP.getUserId(player)
-    if user_id ~= nil and vRP.hasPermissions(user_id,itemtr.permissions or {}) then
+    if user_id and vRP.hasPermissions(user_id,itemtr.permissions or {}) then
       vRP.openMenu(player, tr.menu) -- open menu
     end
   end
@@ -186,7 +198,7 @@ function vRP.setItemTransformer(name,itemtr)
   -- bind tr area to all already spawned players
   for k,v in pairs(vRP.rusers) do
     local source = vRP.getUserSource(k)
-    if source ~= nil then
+    if source then
       bind_tr_area(source,tr)
     end
   end
@@ -209,7 +221,7 @@ function vRP.removeItemTransformer(name)
     -- remove tr area from all already spawned players
     for k,v in pairs(vRP.rusers) do
       local source = vRP.getUserSource(k)
-      if source ~= nil then
+      if source then
         unbind_tr_area(source,tr)
       end
     end
@@ -266,26 +278,27 @@ end)
 local function gen_random_position(positions)
   local n = #positions
   if n > 0 then
-    return positions[math.random(1,n+1)]
+    return positions[math.random(1,n)]
   else 
     return {0,0,0}
   end
 end
 
 local function hidden_placement_tick()
-  local hidden_trs = json.decode(vRP.getSData("vRP:hidden_trs")) or {}
+  local data = vRP.getSData("vRP:hidden_trs")
+  local hidden_trs = json.decode(data) or {}
 
   for k,v in pairs(cfg.hidden_transformers) do
     -- init entry
     local htr = hidden_trs[k]
-    if htr == nil then
-      hidden_trs[k] = {timestamp=cast(int,os.time()), position=gen_random_position(v.positions)}
+    if not htr then
+      hidden_trs[k] = {timestamp=parseInt(os.time()), position=gen_random_position(v.positions)}
       htr = hidden_trs[k]
     end
 
     -- remove hidden transformer if needs respawn
     if tonumber(os.time())-htr.timestamp >= cfg.hidden_transformer_duration*60 then
-      htr.timestamp = cast(int,os.time())
+      htr.timestamp = parseInt(os.time())
       vRP.removeItemTransformer("cfg:"..k)
       -- generate new position
       htr.position = gen_random_position(v.positions)
@@ -302,7 +315,6 @@ local function hidden_placement_tick()
   end
 
   vRP.setSData("vRP:hidden_trs",json.encode(hidden_trs)) -- save hidden transformers
-
   SetTimeout(300000, hidden_placement_tick)
 end
 SetTimeout(5000, hidden_placement_tick) -- delayed to wait items loading
@@ -317,13 +329,13 @@ local function ch_informer_buy(player,choice)
   local tr = transformers["cfg:"..choice]
   local price = cfg.informer.infos[choice]
 
-  if user_id ~= nil and tr ~= nil then
+  if user_id and tr then
     if vRP.tryPayment(user_id, price) then
-      vRPclient.setGPS(player, {tr.itemtr.x,tr.itemtr.y}) -- set gps marker
-      vRPclient.notify(player, {lang.money.paid({price})})
-      vRPclient.notify(player, {lang.itemtr.informer.bought()})
+      vRPclient._setGPS(player, tr.itemtr.x,tr.itemtr.y) -- set gps marker
+      vRPclient._notify(player, lang.money.paid({price}))
+      vRPclient._notify(player, lang.itemtr.informer.bought())
     else
-      vRPclient.notify(player, {lang.money.not_enough()})
+      vRPclient._notify(player, lang.money.not_enough())
     end
   end
 end
@@ -332,14 +344,14 @@ for k,v in pairs(cfg.informer.infos) do
   informer_menu[k] = {ch_informer_buy, lang.itemtr.informer.description({v})}
 end
 
-local function informer_enter()
+local function informer_enter(source)
   local user_id = vRP.getUserId(source)
-  if user_id ~= nil then
+  if user_id then
     vRP.openMenu(source,informer_menu) 
   end
 end
 
-local function informer_leave()
+local function informer_leave(source)
   vRP.closeMenu(source)
 end
 
@@ -351,8 +363,8 @@ local function informer_placement_tick()
     local player = vRP.getUserSource(tonumber(k))
 
     -- add informer blip/marker/area
-    vRPclient.setNamedBlip(player,{"vRP:informer",x,y,z,cfg.informer.blipid,cfg.informer.blipcolor,lang.itemtr.informer.title()})
-    vRPclient.setNamedMarker(player,{"vRP:informer",x,y,z-1,0.7,0.7,0.5,0,255,125,125,150})
+    vRPclient._setNamedBlip(player,"vRP:informer",x,y,z,cfg.informer.blipid,cfg.informer.blipcolor,lang.itemtr.informer.title())
+    vRPclient._setNamedMarker(player,"vRP:informer",x,y,z-1,0.7,0.7,0.5,0,255,125,125,150)
     vRP.setArea(player,"vRP:informer",x,y,z,1,1.5,informer_enter,informer_leave)
   end
 
@@ -360,8 +372,8 @@ local function informer_placement_tick()
   SetTimeout(cfg.informer.duration*60000, function()
     for k,v in pairs(vRP.rusers) do
       local player = vRP.getUserSource(tonumber(k))
-      vRPclient.removeNamedBlip(player,{"vRP:informer"})
-      vRPclient.removeNamedMarker(player,{"vRP:informer"})
+      vRPclient._removeNamedBlip(player,"vRP:informer")
+      vRPclient._removeNamedMarker(player,"vRP:informer")
       vRP.removeArea(player,"vRP:informer")
     end
   end)

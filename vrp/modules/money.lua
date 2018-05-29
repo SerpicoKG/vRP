@@ -4,7 +4,7 @@ local lang = vRP.lang
 -- The money is managed with direct SQL requests to prevent most potential value corruptions
 -- the wallet empty itself when respawning (after death)
 
-local q_init = vRP.sql:prepare([[
+vRP.prepare("vRP/money_tables", [[
 CREATE TABLE IF NOT EXISTS vrp_user_moneys(
   user_id INTEGER,
   wallet INTEGER,
@@ -13,45 +13,43 @@ CREATE TABLE IF NOT EXISTS vrp_user_moneys(
   CONSTRAINT fk_user_moneys_users FOREIGN KEY(user_id) REFERENCES vrp_users(id) ON DELETE CASCADE
 );
 ]])
-q_init:execute()
 
-local q_init_user = vRP.sql:prepare("INSERT IGNORE INTO vrp_user_moneys(user_id,wallet,bank) VALUES(@user_id,@wallet,@bank)")
-local q_get_wallet = vRP.sql:prepare("SELECT wallet FROM vrp_user_moneys WHERE user_id = @user_id")
-local q_set_wallet = vRP.sql:prepare("UPDATE vrp_user_moneys SET wallet = @wallet WHERE user_id = @user_id")
-local q_get_bank = vRP.sql:prepare("SELECT bank FROM vrp_user_moneys WHERE user_id = @user_id")
-local q_set_bank = vRP.sql:prepare("UPDATE vrp_user_moneys SET bank = @bank WHERE user_id = @user_id")
+vRP.prepare("vRP/money_init_user","INSERT IGNORE INTO vrp_user_moneys(user_id,wallet,bank) VALUES(@user_id,@wallet,@bank)")
+vRP.prepare("vRP/get_money","SELECT wallet,bank FROM vrp_user_moneys WHERE user_id = @user_id")
+vRP.prepare("vRP/set_money","UPDATE vrp_user_moneys SET wallet = @wallet, bank = @bank WHERE user_id = @user_id")
 
+-- init tables
+async(function()
+  vRP.execute("vRP/money_tables")
+end)
 
 -- load config
-local cfg = require("resources/vrp/cfg/money")
-q_init_user:bind("@wallet",cfg.open_wallet)
-q_init_user:bind("@bank",cfg.open_bank)
+local cfg = module("cfg/money")
 
 -- API
 
 -- get money
+-- cbreturn nil if error
 function vRP.getMoney(user_id)
-  q_get_wallet:bind("@user_id",user_id)
-  local r = q_get_wallet:query()
-  local v = 0
-  if r:fetch() then
-    v = r:getValue(0)
+  local tmp = vRP.getUserTmpTable(user_id)
+  if tmp then
+    return tmp.wallet or 0
+  else
+    return 0
   end
-
-  r:close()
-  return v
 end
 
 -- set money
 function vRP.setMoney(user_id,value)
-  q_set_wallet:bind("@user_id",user_id)
-  q_set_wallet:bind("@wallet",value)
-  q_set_wallet:execute()
+  local tmp = vRP.getUserTmpTable(user_id)
+  if tmp then
+    tmp.wallet = value
+  end
 
   -- update client display
   local source = vRP.getUserSource(user_id)
-  if source ~= nil then
-    vRPclient.setDivContent(source,{"money",lang.money.display({value})})
+  if source then
+    vRPclient._setDivContent(source,"money",lang.money.display({value}))
   end
 end
 
@@ -59,7 +57,7 @@ end
 -- return true or false (debited if true)
 function vRP.tryPayment(user_id,amount)
   local money = vRP.getMoney(user_id)
-  if money >= amount then
+  if amount >= 0 and money >= amount then
     vRP.setMoney(user_id,money-amount)
     return true
   else
@@ -69,28 +67,28 @@ end
 
 -- give money
 function vRP.giveMoney(user_id,amount)
-  local money = vRP.getMoney(user_id)
-  vRP.setMoney(user_id,money+amount)
+  if amount > 0 then
+    local money = vRP.getMoney(user_id)
+    vRP.setMoney(user_id,money+amount)
+  end
 end
 
 -- get bank money
 function vRP.getBankMoney(user_id)
-  q_get_bank:bind("@user_id",user_id)
-  local r = q_get_bank:query()
-  local v = 0
-  if r:fetch() then
-    v = r:getValue(0)
+  local tmp = vRP.getUserTmpTable(user_id)
+  if tmp then
+    return tmp.bank or 0
+  else
+    return 0
   end
-
-  r:close()
-  return v
 end
 
 -- set bank money
 function vRP.setBankMoney(user_id,value)
-  q_set_bank:bind("@user_id",user_id)
-  q_set_bank:bind("@bank",value)
-  q_set_bank:execute()
+  local tmp = vRP.getUserTmpTable(user_id)
+  if tmp then
+    tmp.bank = value
+  end
 end
 
 -- give bank money
@@ -105,7 +103,7 @@ end
 -- return true or false (withdrawn if true)
 function vRP.tryWithdraw(user_id,amount)
   local money = vRP.getBankMoney(user_id)
-  if amount > 0 and money >= amount then
+  if amount >= 0 and money >= amount then
     vRP.setBankMoney(user_id,money-amount)
     vRP.giveMoney(user_id,amount)
     return true
@@ -117,7 +115,7 @@ end
 -- try a deposit
 -- return true or false (deposited if true)
 function vRP.tryDeposit(user_id,amount)
-  if amount > 0 and vRP.tryPayment(user_id,amount) then
+  if amount >= 0 and vRP.tryPayment(user_id,amount) then
     vRP.giveBankMoney(user_id,amount)
     return true
   else
@@ -140,56 +138,80 @@ function vRP.tryFullPayment(user_id,amount)
   return false
 end
 
--- events, init user account at connection
+-- events, init user account if doesn't exist at connection
 AddEventHandler("vRP:playerJoin",function(user_id,source,name,last_login)
-  q_init_user:bind("@user_id",user_id) -- create if not exists player money account
-  q_init_user:execute()
+  vRP.execute("vRP/money_init_user", {user_id = user_id, wallet = cfg.open_wallet, bank = cfg.open_bank})
+  -- load money (wallet,bank)
+  local tmp = vRP.getUserTmpTable(user_id)
+  if tmp then
+    local rows = vRP.query("vRP/get_money", {user_id = user_id})
+    if #rows > 0 then
+      tmp.bank = rows[1].bank
+      tmp.wallet = rows[1].wallet
+    end
+  end
+end)
+
+-- save money on leave
+AddEventHandler("vRP:playerLeave",function(user_id,source)
+  -- (wallet,bank)
+  local tmp = vRP.getUserTmpTable(user_id)
+  if tmp and tmp.wallet and tmp.bank then
+    vRP.execute("vRP/set_money", {user_id = user_id, wallet = tmp.wallet, bank = tmp.bank})
+  end
+end)
+
+-- save money (at same time that save datatables)
+AddEventHandler("vRP:save", function()
+  for k,v in pairs(vRP.user_tmp_tables) do
+    if v.wallet and v.bank then
+      vRP.execute("vRP/set_money", {user_id = k, wallet = v.wallet, bank = v.bank})
+    end
+  end
 end)
 
 -- money hud
 AddEventHandler("vRP:playerSpawn",function(user_id, source, first_spawn)
   if first_spawn then
     -- add money display
-    vRPclient.setDiv(source,{"money",cfg.display_css,lang.money.display({vRP.getMoney(user_id)})})
+    vRPclient._setDiv(source,"money",cfg.display_css,lang.money.display({vRP.getMoney(user_id)}))
   end
 end)
 
 local function ch_give(player,choice)
   -- get nearest player
   local user_id = vRP.getUserId(player)
-  if user_id ~= nil then
-    vRPclient.getNearestPlayer(player,{10},function(nplayer)
-      if nplayer ~= nil then
-        local nuser_id = vRP.getUserId(nplayer)
-        if nuser_id ~= nil then
-          -- prompt number
-          vRP.prompt(player,lang.money.give.prompt(),"",function(player,amount)
-            local amount = parseInt(amount)
-            if amount > 0 and vRP.tryPayment(user_id,amount) then
-              vRP.giveMoney(nuser_id,amount)
-              vRPclient.notify(player,{lang.money.given({amount})})
-              vRPclient.notify(nplayer,{lang.money.received({amount})})
-            else
-              vRPclient.notify(player,{lang.money.not_enough()})
-            end
-          end)
+  if user_id then
+    local nplayer = vRPclient.getNearestPlayer(player,10)
+    if nplayer then
+      local nuser_id = vRP.getUserId(nplayer)
+      if nuser_id then
+        -- prompt number
+        local amount = vRP.prompt(player,lang.money.give.prompt(),"")
+        local amount = parseInt(amount)
+        if amount > 0 and vRP.tryPayment(user_id,amount) then
+          vRP.giveMoney(nuser_id,amount)
+          vRPclient._notify(player,lang.money.given({amount}))
+          vRPclient._notify(nplayer,lang.money.received({amount}))
         else
-          vRPclient.notify(player,{lang.common.no_player_near()})
+          vRPclient._notify(player,lang.money.not_enough())
         end
       else
-        vRPclient.notify(player,{lang.common.no_player_near()})
+        vRPclient._notify(player,lang.common.no_player_near())
       end
-    end)
+    else
+      vRPclient._notify(player,lang.common.no_player_near())
+    end
   end
 end
 
 -- add player give money to main menu
-AddEventHandler("vRP:buildMainMenu",function(player) 
-  local user_id = vRP.getUserId(player)
-  if user_id ~= nil then
+vRP.registerMenuBuilder("main", function(add, data)
+  local user_id = vRP.getUserId(data.player)
+  if user_id then
     local choices = {}
     choices[lang.money.give.title()] = {ch_give, lang.money.give.description()}
 
-    vRP.buildMainMenu(player,choices)
+    add(choices)
   end
 end)
